@@ -157,7 +157,7 @@ func GetLessonId(sessionid, courseId string) string {
 
 func GetLessonOtherInfo(sessionid string, lessonId string) (string, string, string) {
 	url := "https://www.yuketang.cn/api/v3/lesson/checkin"
-	jsonData := []byte(fmt.Sprintf(`{"source": 5, "lessonId": "%s"}`, lessonId))
+	jsonData := []byte(fmt.Sprintf(`{"source": 1, "lessonId": "%s"}`, lessonId))
 
 	// 创建HTTP请求
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
