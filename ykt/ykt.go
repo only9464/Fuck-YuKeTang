@@ -195,7 +195,7 @@ func GetLessonOtherInfo(sessionid string, lessonId string) (string, string, stri
 }
 
 // UpdateBanks 函数功能：更新题库，参数：presentationID（string），返回值：无
-func UpdateBanks(presentationID string) {
+func UpdateBanks(presentationID string, sessionid string, auth string) {
 	// 读取 JSON 文件
 	filePath := fmt.Sprintf("./ppts/%s.json", presentationID)
 	fileData, err := os.ReadFile(filePath)
@@ -232,15 +232,18 @@ func UpdateBanks(presentationID string) {
 				return true
 			})
 
+			teachLessonID := openLesson(sessionid, auth)
+
 			qa := map[string]interface{}{
 				"presentation_id": presentationID,
 				"problemId":       problemID,
 				"problemType":     problemType,
 				"question":        question,
-				"answers":         answers.Value(),
+				"answers":         GetAnswer(problemID, teachLessonID, sessionid),
 				"options":         options,
 			}
 
+			closeLesson(teachLessonID, sessionid)
 			qaList = append(qaList, qa)
 		}
 		return true
@@ -334,7 +337,7 @@ func StorePPT(sessionid, presentationID, auth string) error {
 	}
 
 	log.Printf("-----------PPT文件保存在: %s------------\n", fileName)
-	UpdateBanks(presentationID) // 更新题库
+	UpdateBanks(presentationID, sessionid, auth) // 更新题库
 	return nil
 }
 
@@ -376,7 +379,7 @@ func PostAnswer(sessionid string, auth string, problemId string, delay map[strin
 		"problemId": "%s",
 		"problemType": %d,
 		"dt": %d,
-		"result": %s
+		"result": ["%s"]
 	}`, problemId, problemType, time.Now().UnixNano()/int64(time.Millisecond), answers)
 	// 将answers中的换行符去掉，赋值给answer
 	answer := strings.ReplaceAll(answers, "\n", "")
@@ -405,7 +408,8 @@ func PostAnswer(sessionid string, auth string, problemId string, delay map[strin
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+auth)
-	req.AddCookie(&http.Cookie{Name: "sessionid", Value: sessionid})
+	req.Header.Set("Cookie", "sessionid="+sessionid)
+	//req.AddCookie(&http.Cookie{Name: "sessionid", Value: sessionid})
 	// 延时三秒
 	// time.Sleep(3 * time.Second)
 	resp, err := client.Do(req)
@@ -422,14 +426,14 @@ func PostAnswer(sessionid string, auth string, problemId string, delay map[strin
 	}
 
 	// 解析响应
-	result := gjson.Parse(string(body))
+	a := string(body)
+	result := gjson.Parse(a)
 	// log.Println(result.String())
 
 	if result.Get("code").Int() == 0 && result.Get("msg").String() == "OK" {
 		log.Printf("题目标号为%s的题目提交成功！！题目为%s，答案为%s\n", problemId, question, answer)
 	} else {
-		// log.Printf("题目标号为%s的题目提交失败！！题目为%s，答案为%s\n", problemId, question, answer)
-		log.Printf("题目标号为%s的题目提交失败！！原因：%s\n", problemId, result.Get("msg").String())
+		log.Printf("题目标号为%s的题目提交失败！！题目为%s，答案为%s\n", problemId, question, answer)
 	}
 }
 func CheckSessionId(sessionid string) bool {
@@ -619,4 +623,202 @@ func SaveCourseId(sessionid string) {
 
 		return true // 继续遍历
 	})
+}
+
+func openLesson(sessionid string, auth string) string {
+	//checkclassroomid
+	classroomId := classroomcheck(sessionid, auth)
+
+	data := map[string]interface{}{
+		"classroomId": classroomId,
+		"title":       "答案采样授课",
+		"chapterId":   nil,
+		"sectionId":   nil,
+	}
+
+	// 将数据编码成 JSON 格式
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		fmt.Println("Error marshaling JSON:", err)
+		return ""
+	}
+
+	// 创建 POST 请求
+	url := "https://www.yuketang.cn/api/v3/lesson/add"
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Println("Error creating request:", err)
+		return ""
+	}
+
+	// 设置请求头
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+auth)
+	req.Header.Set("Cookie", "sessionid="+sessionid)
+
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println("Error sending request:", err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	setAuth := resp.Header.Get("set-auth")
+
+	// 输出响应
+	return "Bearer " + setAuth
+}
+
+func GetAnswer(problemid string, teachLessonID string, sessionid string) string {
+	// 构造请求 URL 和参数
+	baseURL := "https://www.yuketang.cn/api/v3/lesson/problem/choice-detail"
+	params := url.Values{}
+	params.Add("problem_id", problemid)
+
+	// 完整的 URL 带参数
+	finalURL := fmt.Sprintf("%s?%s", baseURL, params.Encode())
+
+	// 创建 GET 请求
+	req, err := http.NewRequest("GET", finalURL, nil)
+	if err != nil {
+		return ""
+	}
+
+	// 设置请求头
+	req.Header.Set("Authorization", teachLessonID)
+	req.Header.Set("Cookie", "sessionid="+sessionid)
+
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		// 读取响应体
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return ""
+		}
+
+		// 定义一个结构体来解析JSON
+		type ResponseData struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+			Data struct {
+				Display      string        `json:"display"`
+				Distribution []interface{} `json:"distribution"`
+				Unfinished   []interface{} `json:"unfinished"`
+			} `json:"data"`
+		}
+
+		// 解析JSON响应
+		var responseData ResponseData
+		err = json.Unmarshal(body, &responseData)
+		if err != nil {
+			fmt.Println("Error unmarshaling response JSON:", err)
+			return ""
+		}
+
+		// 提取 display 字段的值
+		return responseData.Data.Display
+	} else {
+		fmt.Println("Unexpected status code:", resp.StatusCode)
+	}
+	return ""
+}
+
+func closeLesson(teachLessonID string, sessionid string) {
+	url := "https://www.yuketang.cn/api/v3/lesson/end"
+	req, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		fmt.Println("Error creating request:", err)
+		return
+	}
+
+	req.Header.Set("Authorization", teachLessonID)
+	req.Header.Set("cookie", "sessionid="+sessionid)
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	return
+}
+
+func classroomcheck(sessionid string, auth string) string {
+	url := "https://www.yuketang.cn/api/v3/classroom/drop-down"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Cookie", "sessionid="+sessionid)
+	req.Header.Set("Authorization", auth)
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+	if resp.StatusCode == http.StatusOK {
+		type Classroom struct {
+			ClassroomId               string `json:"classroomId"`
+			ClassroomName             string `json:"classroomName"`
+			LessonCompanionPermission int    `json:"lessonCompanionPermission"`
+			Archived                  bool   `json:"archived"`
+			Active                    bool   `json:"active"`
+		}
+
+		type Course struct {
+			CourseId       string      `json:"courseId"`
+			CourseName     string      `json:"courseName"`
+			UniversityId   string      `json:"universityId"`
+			UniversityLogo string      `json:"universityLogo"`
+			Classrooms     []Classroom `json:"classrooms"`
+			TeacherManage  bool        `json:"teacherManage"`
+			Archived       bool        `json:"archived"`
+			Active         bool        `json:"active"`
+		}
+
+		type ResponseData struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+			Data struct {
+				Courses []Course `json:"courses"`
+			} `json:"data"`
+		}
+
+		// 解析 JSON 响应体
+		var responseData ResponseData
+		err = json.Unmarshal(body, &responseData)
+		if err != nil {
+			fmt.Println("Error unmarshaling response JSON:", err)
+			return ""
+		}
+
+		// 遍历 courses，查找 courseName 为 "法郎" 的班级ID
+		// 遍历 courses，查找 courseName 为 "法郎" 的第一个 classroomId
+		for _, course := range responseData.Data.Courses {
+			if course.CourseName == "法郎" {
+				if len(course.Classrooms) > 0 {
+					return course.Classrooms[0].ClassroomId
+				} else {
+					fmt.Println("No classrooms found for 法郎.")
+				}
+				break // 找到后不再继续循环
+			}
+		}
+	} else {
+		fmt.Println("Unexpected status code:", resp.StatusCode)
+	}
+	return ""
 }
